@@ -59,11 +59,12 @@ func (d *Device) sendHD2020Gen6Screen(screen *Screen) error {
 
 	transferID := uint16(time.Now().UnixNano())
 	if sendMode == hd2020SendModeProgram {
-		bitmap, err := encodeHD2020ProgramBitmap(mask, spec.width, spec.height, spec.config.Color, spec.config.BackgroundColor)
+		programColorMode := hd2020ProgramColorMode()
+		bitmap, err := encodeHD2020ProgramBitmap(mask, spec.width, spec.height, spec.config.Color, spec.config.BackgroundColor, programColorMode)
 		if err != nil {
 			return err
 		}
-		packets := buildHD2020ProgramScreenPackets(bitmap, spec.width, spec.height, transferID)
+		packets := buildHD2020ProgramScreenPackets(bitmap, spec.width, spec.height, transferID, programColorMode)
 		return d.sendHD2020Packets(packets)
 	}
 
@@ -162,6 +163,17 @@ func hd2020BitmapModeOverride() (hd2020BitmapMode, bool) {
 		return hd2020BitmapFullColorRGB, true
 	default:
 		return hd2020BitmapLegacyTwoPlane, false
+	}
+}
+
+func hd2020ProgramColorMode() int {
+	switch strings.TrimSpace(os.Getenv("HUIDU_HD2020_PROGRAM_COLOR_MODE")) {
+	case "1":
+		return 1
+	case "2", "":
+		return 2
+	default:
+		return 2
 	}
 }
 
@@ -517,7 +529,7 @@ func renderHD2020TextBitmap(text string, width, height int) ([]byte, error) {
 	return bitmap, err
 }
 
-func encodeHD2020ProgramBitmap(mask []bool, width, height int, textHex, backgroundHex string) ([]byte, error) {
+func encodeHD2020ProgramBitmap(mask []bool, width, height int, textHex, backgroundHex string, colorMode int) ([]byte, error) {
 	if width <= 0 || height <= 0 || width%8 != 0 {
 		return nil, fmt.Errorf("geçersiz HD2020 bitmap boyutu: %dx%d", width, height)
 	}
@@ -526,10 +538,59 @@ func encodeHD2020ProgramBitmap(mask []bool, width, height int, textHex, backgrou
 	}
 
 	rowBytes := width / 8
-	textRed, textGreen := hd2020ProgramColorPlanes(textHex, true)
-	bgRed, bgGreen := hd2020ProgramColorPlanes(backgroundHex, false)
-	bitmap := make([]byte, rowBytes*height*2)
+	if colorMode == 1 {
+		return encodeHD2020ProgramDualColorBitmap(mask, width, height, textHex, backgroundHex), nil
+	}
 
+	textRed, textGreen, textBlue := hd2020ProgramRGBPlanes(textHex, true)
+	bgRed, bgGreen, bgBlue := hd2020ProgramRGBPlanes(backgroundHex, false)
+	bitmap := make([]byte, rowBytes*height*3)
+	for py := 0; py < height; py++ {
+		rowBase := py * rowBytes * 3
+		redPlane := bitmap[rowBase : rowBase+rowBytes]
+		greenPlane := bitmap[rowBase+rowBytes : rowBase+rowBytes*2]
+		bluePlane := bitmap[rowBase+rowBytes*2 : rowBase+rowBytes*3]
+		if bgRed {
+			fillHD2020PlaneRow(redPlane)
+		}
+		if bgGreen {
+			fillHD2020PlaneRow(greenPlane)
+		}
+		if bgBlue {
+			fillHD2020PlaneRow(bluePlane)
+		}
+		for px := 0; px < width; px++ {
+			if !mask[py*width+px] {
+				continue
+			}
+			bit := byte(0x80 >> uint(px%8))
+			col := px / 8
+			if textRed {
+				redPlane[col] |= bit
+			} else {
+				redPlane[col] &^= bit
+			}
+			if textGreen {
+				greenPlane[col] |= bit
+			} else {
+				greenPlane[col] &^= bit
+			}
+			if textBlue {
+				bluePlane[col] |= bit
+			} else {
+				bluePlane[col] &^= bit
+			}
+		}
+	}
+
+	return bitmap, nil
+}
+
+func encodeHD2020ProgramDualColorBitmap(mask []bool, width, height int, textHex, backgroundHex string) []byte {
+	rowBytes := width / 8
+	textRed, textGreen := hd2020ProgramDualColorPlanes(textHex, true)
+	bgRed, bgGreen := hd2020ProgramDualColorPlanes(backgroundHex, false)
+	bitmap := make([]byte, rowBytes*height*2)
 	for py := 0; py < height; py++ {
 		rowBase := py * rowBytes * 2
 		redPlane := bitmap[rowBase : rowBase+rowBytes]
@@ -558,11 +619,22 @@ func encodeHD2020ProgramBitmap(mask []bool, width, height int, textHex, backgrou
 			}
 		}
 	}
+	return bitmap
+}
 
-	return bitmap, nil
+func hd2020ProgramRGBPlanes(hex string, defaultWhite bool) (red, green, blue bool) {
+	r, g, b, ok := parseHD2020ColorValue(hex)
+	if !ok {
+		return defaultWhite, defaultWhite, defaultWhite
+	}
+	return r >= 128, g >= 128, b >= 128
 }
 
 func hd2020ProgramColorPlanes(hex string, defaultWhite bool) (red, green bool) {
+	return hd2020ProgramDualColorPlanes(hex, defaultWhite)
+}
+
+func hd2020ProgramDualColorPlanes(hex string, defaultWhite bool) (red, green bool) {
 	r, g, b, ok := parseHD2020ColorValue(hex)
 	if !ok {
 		return defaultWhite, defaultWhite
@@ -665,8 +737,8 @@ func hd2020AreaDataChunkSize(dataLen int) int {
 	return 512
 }
 
-func buildHD2020ProgramScreenPackets(bitmap []byte, width, height int, transferID uint16) [][]byte {
-	screenData := buildHD2020ProgramData(bitmap, width, height)
+func buildHD2020ProgramScreenPackets(bitmap []byte, width, height int, transferID uint16, colorMode int) [][]byte {
+	screenData := buildHD2020ProgramData(bitmap, width, height, colorMode)
 	chunks := splitHD2020AreaData(screenData, 1000)
 
 	startPayload := make([]byte, 5)
@@ -675,7 +747,7 @@ func buildHD2020ProgramScreenPackets(bitmap []byte, width, height int, transferI
 	binary.BigEndian.PutUint16(startPayload[3:5], uint16(len(chunks)))
 
 	packets := [][]byte{
-		buildHD2020Packet(0x13, 1, hd2020ProgramScreenPayload(width, height)),
+		buildHD2020Packet(0x13, 1, hd2020ProgramScreenPayload(width, height, colorMode)),
 		buildHD2020Packet(0x02, 2, startPayload),
 	}
 	for i, chunk := range chunks {
@@ -695,8 +767,9 @@ func buildHD2020ProgramScreenPackets(bitmap []byte, width, height int, transferI
 	return packets
 }
 
-func buildHD2020ProgramData(bitmap []byte, width, height int) []byte {
+func buildHD2020ProgramData(bitmap []byte, width, height int, colorMode int) []byte {
 	chunkCount := (144 + len(bitmap) + 999) / 1000
+	rowUnit := byte(4 * (colorMode + 1))
 	hc := []byte{
 		0x48, 0x43, 0x19, 0x00, 0x01, 0xff, 0xff, 0xff,
 		0xff, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -715,6 +788,7 @@ func buildHD2020ProgramData(bitmap []byte, width, height int) []byte {
 		0x00, 0x01, 0xff, 0x00, 0x00, 0x00, 0x00, 0x3c,
 		0xff, 0xff, 0xff, 0xff,
 	}
+	hp[32] = rowUnit
 
 	ha := []byte{
 		0x48, 0x41, 0x00, 0x19, 0x00, 0x00, 0x00, 0x00,
@@ -727,6 +801,7 @@ func buildHD2020ProgramData(bitmap []byte, width, height int) []byte {
 	}
 	binary.BigEndian.PutUint16(ha[8:10], uint16(width))
 	binary.BigEndian.PutUint16(ha[10:12], uint16(height))
+	ha[42] = rowUnit
 
 	data := make([]byte, 0, len(hc)+len(hp)+len(ha)+len(bitmap))
 	data = append(data, hc...)
@@ -765,7 +840,7 @@ func buildHD2020RealtimeScreenSetupPackets(width, height int, transferID uint16)
 	}
 }
 
-func hd2020ProgramScreenPayload(width, height int) []byte {
+func hd2020ProgramScreenPayload(width, height int, colorMode int) []byte {
 	payload := []byte{
 		0x48, 0x53, 0x00, 0x42,
 		0x00, 0x80, 0x00, 0x40,
@@ -787,6 +862,7 @@ func hd2020ProgramScreenPayload(width, height int) []byte {
 	}
 	binary.BigEndian.PutUint16(payload[4:6], uint16(width))
 	binary.BigEndian.PutUint16(payload[6:8], uint16(height))
+	payload[59] = byte(colorMode)
 	return payload
 }
 
