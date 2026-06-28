@@ -758,6 +758,9 @@ func (d *Device) SendText(text string, config TextConfig) error {
 	if d.info != nil {
 		w = d.info.ScreenWidth
 		h = d.info.ScreenHeight
+	} else if d.protocol == ProtocolHD2020Gen6 && d.hd2020CardTypeKnown && isHD2020FullColorCard(d.hd2020CardType) {
+		w = 128
+		h = 64
 	}
 	d.mu.Unlock()
 

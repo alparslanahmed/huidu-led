@@ -55,6 +55,11 @@ type Device struct {
 	// protocol, bağlantı kurulan cihazın tel protokol ailesidir.
 	protocol ProtocolKind
 
+	// hd2020CardType, HD2020/Gen6 probe yanıtından okunan kart tipidir.
+	hd2020CardType      byte
+	hd2020CardTypeKnown bool
+	hd2020DeviceID      string
+
 	// stopHeartbeat, heartbeat goroutine'ini durdurmak için kullanılır.
 	stopHeartbeat chan struct{}
 
@@ -125,8 +130,13 @@ func (d *Device) Connect() error {
 				d.conn = nil
 			}
 			d.protocol = ProtocolHD2020Gen6
+			d.populateHD2020InfoLocked()
 			d.connected = true
-			d.logf("HD2020/Gen6 protokolü algılandı; realtime bitmap backend kullanılacak")
+			if d.hd2020CardTypeKnown {
+				d.logf("HD2020/Gen6 protokolü algılandı; cardType=0x%02x deviceID=%s realtime bitmap backend kullanılacak", d.hd2020CardType, d.hd2020DeviceID)
+			} else {
+				d.logf("HD2020/Gen6 protokolü algılandı; realtime bitmap backend kullanılacak")
+			}
 			return nil
 		}
 		d.closeInternal()
@@ -200,6 +210,21 @@ func (d *Device) Protocol() ProtocolKind {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.protocol
+}
+
+// HD2020CardType, HD2020/Gen6 cihazlarında probe yanıtından okunan kart tipini
+// döner. Bilgi alınamadıysa ok=false döner.
+func (d *Device) HD2020CardType() (cardType byte, ok bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.hd2020CardType, d.hd2020CardTypeKnown
+}
+
+// HD2020DeviceID, HD2020/Gen6 probe yanıtından okunan cihaz kimliğini döner.
+func (d *Device) HD2020DeviceID() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.hd2020DeviceID
 }
 
 // GUID, bu oturumun SDK GUID değerini döner.
