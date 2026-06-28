@@ -133,9 +133,9 @@ func (d *Device) Connect() error {
 			d.populateHD2020InfoLocked()
 			d.connected = true
 			if d.hd2020CardTypeKnown {
-				d.logf("HD2020/Gen6 protokolü algılandı; cardType=0x%02x deviceID=%s realtime bitmap backend kullanılacak", d.hd2020CardType, d.hd2020DeviceID)
+				d.logf("HD2020/Gen6 protokolü algılandı; cardType=0x%02x deviceID=%s HD2020 backend kullanılacak", d.hd2020CardType, d.hd2020DeviceID)
 			} else {
-				d.logf("HD2020/Gen6 protokolü algılandı; realtime bitmap backend kullanılacak")
+				d.logf("HD2020/Gen6 protokolü algılandı; HD2020 backend kullanılacak")
 			}
 			return nil
 		}

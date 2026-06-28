@@ -157,6 +157,112 @@ func TestEncodeHD2020FullColorRGBBitmap(t *testing.T) {
 	}
 }
 
+func TestEncodeHD2020ProgramBitmap(t *testing.T) {
+	mask := make([]bool, 128*64)
+	mask[0] = true
+	mask[127] = true
+
+	bitmap, err := encodeHD2020ProgramBitmap(mask, 128, 64, "#ffffff", "#22c55e")
+	if err != nil {
+		t.Fatalf("encodeHD2020ProgramBitmap() error = %v", err)
+	}
+	if len(bitmap) != 2048 {
+		t.Fatalf("bitmap len = %d, want 2048", len(bitmap))
+	}
+
+	rowBytes := 128 / 8
+	if bitmap[0] != 0x80 {
+		t.Fatalf("red/text plane first byte = %02x, want 80", bitmap[0])
+	}
+	if bitmap[rowBytes-1] != 0x01 {
+		t.Fatalf("red/text plane last byte = %02x, want 01", bitmap[rowBytes-1])
+	}
+	for i, b := range bitmap[rowBytes : rowBytes*2] {
+		if b != 0xff {
+			t.Fatalf("green/background plane byte %d = %02x, want ff", i, b)
+		}
+	}
+
+	blackBitmap, err := encodeHD2020ProgramBitmap(mask, 128, 64, "#000000", "#f59e0b")
+	if err != nil {
+		t.Fatalf("encode black-on-amber program bitmap: %v", err)
+	}
+	if blackBitmap[0] != 0x7f || blackBitmap[rowBytes] != 0x7f {
+		t.Fatalf("black text did not clear amber background: red=%02x green=%02x", blackBitmap[0], blackBitmap[rowBytes])
+	}
+}
+
+func TestHD2020ProgramScreenPacketsMatchSDKShape(t *testing.T) {
+	bitmap := make([]byte, 2048)
+	for i := range bitmap {
+		bitmap[i] = byte(i)
+	}
+
+	packets := buildHD2020ProgramScreenPackets(bitmap, 128, 64, 0x9735)
+	if len(packets) != 6 {
+		t.Fatalf("packet count = %d, want 6", len(packets))
+	}
+
+	tests := []struct {
+		name string
+		pkt  []byte
+		cmd  byte
+		seq  byte
+		size int
+	}{
+		{"screen params", packets[0], 0x13, 1, 96},
+		{"start", packets[1], 0x02, 2, 35},
+		{"data 0", packets[2], 0x03, 3, 1035},
+		{"data 1", packets[3], 0x03, 4, 1035},
+		{"data 2", packets[4], 0x03, 5, 227},
+		{"end", packets[5], 0x04, 6, 33},
+	}
+	for _, tt := range tests {
+		if len(tt.pkt) != tt.size {
+			t.Fatalf("%s len = %d, want %d", tt.name, len(tt.pkt), tt.size)
+		}
+		if tt.pkt[6] != tt.cmd || tt.pkt[26] != tt.seq {
+			t.Fatalf("%s cmd/seq = 0x%02x/%d, want 0x%02x/%d", tt.name, tt.pkt[6], tt.pkt[26], tt.cmd, tt.seq)
+		}
+		assertHD2020Checksum(t, tt.name, tt.pkt)
+	}
+
+	screenPayload := packets[0][27 : len(packets[0])-3]
+	if screenPayload[5] != 0x80 || screenPayload[7] != 0x40 {
+		t.Fatalf("program screen width/height = %02x/%02x, want 80/40", screenPayload[5], screenPayload[7])
+	}
+	if screenPayload[59] != 0x01 || screenPayload[60] != 0x01 {
+		t.Fatalf("program screen payload mode bytes = %02x/%02x, want 01/01", screenPayload[59], screenPayload[60])
+	}
+
+	startPayload := packets[1][27 : len(packets[1])-3]
+	if startPayload[0] != 0x05 || startPayload[1] != 0x35 || startPayload[2] != 0x97 || startPayload[4] != 0x03 {
+		t.Fatalf("program start payload = % x", startPayload)
+	}
+
+	var chunks [][]byte
+	for i := 2; i <= 4; i++ {
+		payload := packets[i][27 : len(packets[i])-3]
+		if payload[0] != 0x05 || payload[1] != 0x35 || payload[2] != 0x97 || payload[4] != byte(i-2) {
+			t.Fatalf("program data payload %d prefix = % x", i-2, payload[:5])
+		}
+		chunks = append(chunks, payload[5:])
+	}
+	data := append(append(chunks[0], chunks[1]...), chunks[2]...)
+	if len(data) != 2192 {
+		t.Fatalf("program data len = %d, want 2192", len(data))
+	}
+	if string(data[0:2]) != "HC" || string(data[29:31]) != "HP" || string(data[89:91]) != "HA" {
+		t.Fatalf("program data markers missing")
+	}
+	if data[98] != 0x80 || data[100] != 0x40 {
+		t.Fatalf("area header width/height = %02x/%02x, want 80/40", data[98], data[100])
+	}
+	if len(data[144:]) != len(bitmap) {
+		t.Fatalf("program bitmap len = %d, want %d", len(data[144:]), len(bitmap))
+	}
+}
+
 func TestHD2020RealtimeScreenSetupPackets(t *testing.T) {
 	packets := buildHD2020RealtimeScreenSetupPackets(128, 64, 0xd693)
 	if len(packets) != 5 {

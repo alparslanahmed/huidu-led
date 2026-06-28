@@ -18,8 +18,25 @@ func main() {
 	height := flag.Int("height", 0, "screen height; 0 uses SendText default")
 	color := flag.String("color", huidu.ColorWhite, "text color (#RRGGBB)")
 	bg := flag.String("bg", "", "background color (#RRGGBB)")
+	hd2020SendMode := flag.String("hd2020-send-mode", "", "HD2020 send mode override: auto, program, realtime")
+	hd2020Mode := flag.String("hd2020-mode", "", "HD2020 bitmap mode override: auto, legacy, rgb")
+	hd2020SkipSetup := flag.Bool("hd2020-skip-setup", false, "skip HD2020 realtime screen setup packets")
+	hd2020ForceSetup := flag.Bool("hd2020-force-setup", false, "force HD2020 realtime screen setup packets")
 	timeout := flag.Duration("timeout", 5*time.Second, "network timeout")
 	flag.Parse()
+
+	if *hd2020SendMode != "" && *hd2020SendMode != "auto" {
+		os.Setenv("HUIDU_HD2020_SEND_MODE", *hd2020SendMode)
+	}
+	if *hd2020Mode != "" && *hd2020Mode != "auto" {
+		os.Setenv("HUIDU_HD2020_BITMAP_MODE", *hd2020Mode)
+	}
+	if *hd2020SkipSetup {
+		os.Setenv("HUIDU_HD2020_SKIP_SETUP", "1")
+	}
+	if *hd2020ForceSetup {
+		os.Setenv("HUIDU_HD2020_FORCE_SETUP", "1")
+	}
 
 	dev := huidu.NewDevice(*host, *port, huidu.WithTimeout(*timeout), huidu.WithLogger(log.Default()))
 	if err := dev.Connect(); err != nil {
