@@ -20,6 +20,12 @@ func (d *Device) GetDeviceInfo() (*DeviceInfo, error) {
 	if err := d.ensureConnected(); err != nil {
 		return nil, err
 	}
+	if d.protocol == ProtocolHD2020Gen6 {
+		if d.info != nil {
+			return d.info, nil
+		}
+		return nil, fmt.Errorf("%w: HD2020/Gen6 cihaz bilgisi sorgusu bu backend'de desteklenmiyor", ErrUnsupportedProtocol)
+	}
 
 	xmlData := buildSdkXML(d.sdkGUID, MethodGetDeviceInfo, "")
 	resp, err := d.sendSdkCmdAndReceive([]byte(xmlData))
@@ -192,6 +198,9 @@ func (d *Device) GetLuminanceInfo() (*LuminanceInfo, error) {
 	if err := d.ensureConnected(); err != nil {
 		return nil, err
 	}
+	if d.protocol == ProtocolHD2020Gen6 {
+		return nil, fmt.Errorf("%w: HD2020/Gen6 parlaklık okuma bu backend'de desteklenmiyor", ErrUnsupportedProtocol)
+	}
 
 	xmlData := buildSdkXML(d.sdkGUID, MethodGetLuminancePloy, "")
 	resp, err := d.sendSdkCmdAndReceive([]byte(xmlData))
@@ -229,6 +238,9 @@ func (d *Device) GetLuminanceInfo() (*LuminanceInfo, error) {
 func (d *Device) SetLuminanceInfo(info *LuminanceInfo) error {
 	if err := d.ensureConnected(); err != nil {
 		return err
+	}
+	if d.protocol == ProtocolHD2020Gen6 {
+		return fmt.Errorf("%w: HD2020/Gen6 parlaklık ayarı bu backend'de desteklenmiyor", ErrUnsupportedProtocol)
 	}
 
 	// C# SDK varsayılan değerleri: sensorMin=1, sensorMax=100, sensorTime=10

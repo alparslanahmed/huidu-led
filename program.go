@@ -721,6 +721,9 @@ func (d *Device) SendScreen(screen *Screen) error {
 	if err := d.ensureConnected(); err != nil {
 		return err
 	}
+	if d.protocol == ProtocolHD2020Gen6 {
+		return d.sendHD2020Gen6Screen(screen)
+	}
 
 	screenXML := screen.toXML()
 	fullXML := buildSdkXML(d.sdkGUID, MethodAddProgram, screenXML)

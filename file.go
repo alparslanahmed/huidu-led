@@ -40,6 +40,9 @@ func (d *Device) UploadFileAs(filePath string, fileType FileType) error {
 	if err := d.ensureConnected(); err != nil {
 		return err
 	}
+	if d.protocol == ProtocolHD2020Gen6 {
+		return fmt.Errorf("%w: HD2020/Gen6 dosya yükleme bu backend'de desteklenmiyor; metin realtime bitmap olarak gönderilir", ErrUnsupportedProtocol)
+	}
 
 	// Dosyayı aç
 	file, err := os.Open(filePath)
@@ -181,6 +184,9 @@ func (d *Device) UploadFileAs(filePath string, fileType FileType) error {
 func (d *Device) UploadFileData(fileName string, fileData []byte, fileType FileType) error {
 	if err := d.ensureConnected(); err != nil {
 		return err
+	}
+	if d.protocol == ProtocolHD2020Gen6 {
+		return fmt.Errorf("%w: HD2020/Gen6 dosya yükleme bu backend'de desteklenmiyor; metin realtime bitmap olarak gönderilir", ErrUnsupportedProtocol)
 	}
 
 	fileSize := int64(len(fileData))

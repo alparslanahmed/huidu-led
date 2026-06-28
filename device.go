@@ -2,6 +2,7 @@ package huidu
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -51,6 +52,9 @@ type Device struct {
 	// connected, bağlantı durumunu gösterir.
 	connected bool
 
+	// protocol, bağlantı kurulan cihazın tel protokol ailesidir.
+	protocol ProtocolKind
+
 	// stopHeartbeat, heartbeat goroutine'ini durdurmak için kullanılır.
 	stopHeartbeat chan struct{}
 
@@ -76,9 +80,10 @@ func NewDevice(host string, port int, options ...DeviceOption) *Device {
 	}
 
 	return &Device{
-		host: host,
-		port: port,
-		opts: opts,
+		host:     host,
+		port:     port,
+		opts:     opts,
+		protocol: ProtocolSDK2TCP,
 	}
 }
 
@@ -98,6 +103,7 @@ func (d *Device) Connect() error {
 	if d.conn != nil {
 		d.closeInternal()
 	}
+	d.protocol = ProtocolSDK2TCP
 
 	d.logf("TCP bağlantısı kuruluyor: %s:%d", d.host, d.port)
 
@@ -113,6 +119,16 @@ func (d *Device) Connect() error {
 	// Aşama 1: Transport Protocol Version anlaşması
 	d.logf("Aşama 1: Transport Protocol Version anlaşması")
 	if err := d.handshakeVersion(); err != nil {
+		if errors.Is(err, ErrUnsupportedProtocol) {
+			if d.conn != nil {
+				_ = d.conn.Close()
+				d.conn = nil
+			}
+			d.protocol = ProtocolHD2020Gen6
+			d.connected = true
+			d.logf("HD2020/Gen6 protokolü algılandı; realtime bitmap backend kullanılacak")
+			return nil
+		}
 		d.closeInternal()
 		return fmt.Errorf("versiyon anlaşma hatası: %w", err)
 	}
@@ -177,6 +193,13 @@ func (d *Device) Host() string {
 // Port, cihazın port numarasını döner.
 func (d *Device) Port() int {
 	return d.port
+}
+
+// Protocol, son başarılı Connect çağrısında algılanan protokol ailesini döner.
+func (d *Device) Protocol() ProtocolKind {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.protocol
 }
 
 // GUID, bu oturumun SDK GUID değerini döner.
@@ -332,6 +355,9 @@ func (d *Device) readPacket() ([]byte, CmdType, error) {
 	if _, err := io.ReadFull(d.conn, lenBuf); err != nil {
 		return nil, 0, fmt.Errorf("paket uzunluğu okunamadı: %w", err)
 	}
+	if isHD2020Gen6Prefix(lenBuf) {
+		return nil, 0, fmt.Errorf("%w: HD2020/Gen6 yanıtı alındı (prefix % x); bu Device SDK2 TCP protokolünü destekler, port %d için ayrı HD2020/Gen6 backend kullanın", ErrUnsupportedProtocol, lenBuf, d.port)
+	}
 
 	pktLen := int(binary.LittleEndian.Uint16(lenBuf))
 	if pktLen < tcpHeaderLength {
@@ -445,7 +471,13 @@ func (d *Device) logf(format string, v ...interface{}) {
 
 // ensureConnected, bağlantının aktif olduğunu kontrol eder.
 func (d *Device) ensureConnected() error {
-	if !d.connected || d.conn == nil {
+	if !d.connected {
+		return fmt.Errorf("cihaz bağlı değil, önce Connect() çağırın")
+	}
+	if d.protocol == ProtocolHD2020Gen6 {
+		return nil
+	}
+	if d.conn == nil {
 		return fmt.Errorf("cihaz bağlı değil, önce Connect() çağırın")
 	}
 	return nil
