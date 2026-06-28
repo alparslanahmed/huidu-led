@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -42,12 +43,12 @@ func (d *Device) sendHD2020Gen6Screen(screen *Screen) error {
 	}
 
 	mode := d.hd2020BitmapMode(spec)
-	mask, err := renderHD2020TextMask(spec.text, spec.width, spec.height)
+	mask, err := renderHD2020TextMask(spec.text, spec.width, spec.height, spec.config)
 	if err != nil {
 		return err
 	}
 
-	bitmap, planes, err := encodeHD2020TextBitmap(mask, spec.width, spec.height, spec.config.Color, mode)
+	bitmap, planes, err := encodeHD2020TextBitmap(mask, spec.width, spec.height, spec.config.Color, spec.config.BackgroundColor, mode)
 	if err != nil {
 		return err
 	}
@@ -124,7 +125,15 @@ func colorNeedsHD2020RGB(hex string) bool {
 	return ok && b > 0
 }
 
-func renderHD2020TextMask(text string, width, height int) ([]bool, error) {
+type hd2020RenderedLine struct {
+	img            *image.Alpha
+	baseWidth      int
+	baseHeight     int
+	renderedWidth  int
+	renderedHeight int
+}
+
+func renderHD2020TextMask(text string, width, height int, config TextConfig) ([]bool, error) {
 	if width <= 0 || height <= 0 || width%8 != 0 {
 		return nil, fmt.Errorf("geçersiz HD2020 bitmap boyutu: %dx%d", width, height)
 	}
@@ -139,60 +148,110 @@ func renderHD2020TextMask(text string, width, height int) ([]bool, error) {
 	metrics := face.Metrics()
 	lineHeight := metrics.Height.Ceil()
 	ascent := metrics.Ascent.Ceil()
-	scale := chooseHD2020TextScale(lines, width, height, face, lineHeight)
 
-	smallWidth := width / scale
-	smallHeight := height / scale
-	img := image.NewAlpha(image.Rect(0, 0, smallWidth, smallHeight))
-	drawer := &font.Drawer{
-		Dst:  img,
-		Src:  image.NewUniform(color.Alpha{A: 255}),
-		Face: face,
+	margin := maxInt(2, minInt(width, height)/16)
+	gap := maxInt(1, height/16)
+	if len(lines) <= 1 {
+		gap = 0
 	}
-
-	totalHeight := lineHeight * len(lines)
-	y := (smallHeight-totalHeight)/2 + ascent
-	if y < ascent {
-		y = ascent
+	maxLineWidth := width - margin*2
+	if maxLineWidth < 1 {
+		maxLineWidth = width
 	}
+	availableHeight := height - margin*2 - gap*(len(lines)-1)
+	if availableHeight < len(lines) {
+		availableHeight = height - gap*(len(lines)-1)
+	}
+	lineBoxHeight := maxInt(1, availableHeight/len(lines))
 
+	rendered := make([]hd2020RenderedLine, 0, len(lines))
+	totalHeight := 0
 	for _, line := range lines {
-		lineWidth := drawer.MeasureString(line).Ceil()
-		if lineWidth > smallWidth {
-			lineWidth = smallWidth
-		}
-		x := (smallWidth - lineWidth) / 2
-		if x < 0 {
-			x = 0
-		}
-		drawer.Dot = fixed.P(x, y)
-		drawer.DrawString(line)
-		y += lineHeight
+		renderedLine := renderHD2020Line(line, face, ascent, lineHeight, maxLineWidth, lineBoxHeight)
+		rendered = append(rendered, renderedLine)
+		totalHeight += renderedLine.renderedHeight
 	}
+	totalHeight += gap * (len(rendered) - 1)
 
+	y := alignHD2020Vertical(config.VAlign, height, totalHeight, margin)
 	mask := make([]bool, width*height)
-	for sy := 0; sy < smallHeight; sy++ {
-		for sx := 0; sx < smallWidth; sx++ {
-			if img.AlphaAt(sx, sy).A == 0 {
-				continue
-			}
-			for dy := 0; dy < scale; dy++ {
-				py := sy*scale + dy
-				if py >= height {
-					continue
-				}
-				for dx := 0; dx < scale; dx++ {
-					px := sx*scale + dx
-					if px >= width {
-						continue
-					}
-					mask[py*width+px] = true
-				}
-			}
-		}
+	for _, line := range rendered {
+		x := alignHD2020Horizontal(config.HAlign, width, line.renderedWidth, margin)
+		paintHD2020ScaledLine(mask, width, height, line, x, y)
+		y += line.renderedHeight + gap
 	}
 
 	return mask, nil
+}
+
+func renderHD2020Line(line string, face font.Face, ascent, lineHeight, maxWidth, maxHeight int) hd2020RenderedLine {
+	drawer := &font.Drawer{Face: face}
+	baseWidth := drawer.MeasureString(line).Ceil()
+	if baseWidth < 1 {
+		baseWidth = 1
+	}
+	if maxHeight < 1 {
+		maxHeight = lineHeight
+	}
+
+	img := image.NewAlpha(image.Rect(0, 0, baseWidth, lineHeight))
+	drawer = &font.Drawer{
+		Dst:  img,
+		Src:  image.NewUniform(color.Alpha{A: 255}),
+		Face: face,
+		Dot:  fixed.P(0, ascent),
+	}
+	drawer.DrawString(line)
+
+	scaleX := float64(maxWidth) / float64(baseWidth)
+	scaleY := float64(maxHeight) / float64(lineHeight)
+	scale := math.Min(scaleX, scaleY)
+	if scale <= 0 {
+		scale = 1
+	}
+
+	renderedWidth := maxInt(1, int(math.Round(float64(baseWidth)*scale)))
+	renderedHeight := maxInt(1, int(math.Round(float64(lineHeight)*scale)))
+	if renderedWidth > maxWidth {
+		renderedWidth = maxWidth
+	}
+	if renderedHeight > maxHeight {
+		renderedHeight = maxHeight
+	}
+
+	return hd2020RenderedLine{
+		img:            img,
+		baseWidth:      baseWidth,
+		baseHeight:     lineHeight,
+		renderedWidth:  renderedWidth,
+		renderedHeight: renderedHeight,
+	}
+}
+
+func paintHD2020ScaledLine(mask []bool, width, height int, line hd2020RenderedLine, x, y int) {
+	for dy := 0; dy < line.renderedHeight; dy++ {
+		py := y + dy
+		if py < 0 || py >= height {
+			continue
+		}
+		sy := int(float64(dy) * float64(line.baseHeight) / float64(line.renderedHeight))
+		if sy >= line.baseHeight {
+			sy = line.baseHeight - 1
+		}
+		for dx := 0; dx < line.renderedWidth; dx++ {
+			px := x + dx
+			if px < 0 || px >= width {
+				continue
+			}
+			sx := int(float64(dx) * float64(line.baseWidth) / float64(line.renderedWidth))
+			if sx >= line.baseWidth {
+				sx = line.baseWidth - 1
+			}
+			if line.img.AlphaAt(sx, sy).A != 0 {
+				mask[py*width+px] = true
+			}
+		}
+	}
 }
 
 func normalizeHD2020Text(text string) string {
@@ -257,7 +316,7 @@ func chooseHD2020TextScale(lines []string, width, height int, face font.Face, li
 	return 1
 }
 
-func encodeHD2020TextBitmap(mask []bool, width, height int, hexColor string, mode hd2020BitmapMode) ([]byte, int, error) {
+func encodeHD2020TextBitmap(mask []bool, width, height int, hexColor, backgroundHex string, mode hd2020BitmapMode) ([]byte, int, error) {
 	if width <= 0 || height <= 0 || width%8 != 0 {
 		return nil, 0, fmt.Errorf("geçersiz HD2020 bitmap boyutu: %dx%d", width, height)
 	}
@@ -269,7 +328,22 @@ func encodeHD2020TextBitmap(mask []bool, width, height int, hexColor string, mod
 	switch mode {
 	case hd2020BitmapFullColorRGB:
 		r, g, b := parseHD2020Color(hexColor)
+		bgR, bgG, bgB, hasBackground := parseHD2020ColorValue(backgroundHex)
 		bitmap := make([]byte, rowBytes*height*3)
+		if hasBackground && (bgR != 0 || bgG != 0 || bgB != 0) {
+			for py := 0; py < height; py++ {
+				rowBase := py * rowBytes * 3
+				if bgR > 0 {
+					fillHD2020PlaneRow(bitmap[rowBase : rowBase+rowBytes])
+				}
+				if bgG > 0 {
+					fillHD2020PlaneRow(bitmap[rowBase+rowBytes : rowBase+rowBytes*2])
+				}
+				if bgB > 0 {
+					fillHD2020PlaneRow(bitmap[rowBase+rowBytes*2 : rowBase+rowBytes*3])
+				}
+			}
+		}
 		for py := 0; py < height; py++ {
 			rowBase := py * rowBytes * 3
 			for px := 0; px < width; px++ {
@@ -280,12 +354,18 @@ func encodeHD2020TextBitmap(mask []bool, width, height int, hexColor string, mod
 				col := px / 8
 				if r > 0 {
 					bitmap[rowBase+col] |= bit
+				} else {
+					bitmap[rowBase+col] &^= bit
 				}
 				if g > 0 {
 					bitmap[rowBase+rowBytes+col] |= bit
+				} else {
+					bitmap[rowBase+rowBytes+col] &^= bit
 				}
 				if b > 0 {
 					bitmap[rowBase+2*rowBytes+col] |= bit
+				} else {
+					bitmap[rowBase+2*rowBytes+col] &^= bit
 				}
 			}
 		}
@@ -310,9 +390,15 @@ func encodeHD2020TextBitmap(mask []bool, width, height int, hexColor string, mod
 	}
 }
 
+func fillHD2020PlaneRow(row []byte) {
+	for i := range row {
+		row[i] = 0xff
+	}
+}
+
 func parseHD2020Color(hex string) (byte, byte, byte) {
 	r, g, b, ok := parseHD2020ColorValue(hex)
-	if !ok || (r == 0 && g == 0 && b == 0) {
+	if !ok {
 		return 255, 255, 255
 	}
 	return r, g, b
@@ -350,11 +436,11 @@ func parseHD2020ColorValue(hex string) (byte, byte, byte, bool) {
 }
 
 func renderHD2020TextBitmap(text string, width, height int) ([]byte, error) {
-	mask, err := renderHD2020TextMask(text, width, height)
+	mask, err := renderHD2020TextMask(text, width, height, TextConfig{})
 	if err != nil {
 		return nil, err
 	}
-	bitmap, _, err := encodeHD2020TextBitmap(mask, width, height, ColorWhite, hd2020BitmapLegacyTwoPlane)
+	bitmap, _, err := encodeHD2020TextBitmap(mask, width, height, ColorWhite, "", hd2020BitmapLegacyTwoPlane)
 	return bitmap, err
 }
 
@@ -370,6 +456,35 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func alignHD2020Horizontal(align HAlign, width, contentWidth, margin int) int {
+	switch align {
+	case HAlignLeft:
+		return margin
+	case HAlignRight:
+		return width - contentWidth - margin
+	default:
+		return (width - contentWidth) / 2
+	}
+}
+
+func alignHD2020Vertical(align VAlign, height, contentHeight, margin int) int {
+	switch align {
+	case VAlignTop:
+		return margin
+	case VAlignBottom:
+		return height - contentHeight - margin
+	default:
+		return (height - contentHeight) / 2
+	}
 }
 
 func buildHD2020RealtimeAreaPackets(bitmap []byte, width, height, planes int, transferID uint16) [][]byte {

@@ -17,6 +17,7 @@ func main() {
 	width := flag.Int("width", 0, "screen width; 0 uses SendText default")
 	height := flag.Int("height", 0, "screen height; 0 uses SendText default")
 	color := flag.String("color", huidu.ColorWhite, "text color (#RRGGBB)")
+	bg := flag.String("bg", "", "background color (#RRGGBB)")
 	timeout := flag.Duration("timeout", 5*time.Second, "network timeout")
 	flag.Parse()
 
@@ -32,10 +33,10 @@ func main() {
 		screen := huidu.NewScreen()
 		program := screen.AddProgram("test")
 		area := program.AddFullScreenArea(*width, *height)
-		area.AddText(*text, huidu.TextConfig{Color: *color, HAlign: huidu.HAlignCenter, VAlign: huidu.VAlignMiddle})
+		area.AddText(*text, huidu.TextConfig{Color: *color, BackgroundColor: *bg, HAlign: huidu.HAlignCenter, VAlign: huidu.VAlignMiddle})
 		err = dev.SendScreen(screen)
 	} else {
-		err = dev.SendText(*text, huidu.TextConfig{Color: *color})
+		err = dev.SendText(*text, huidu.TextConfig{Color: *color, BackgroundColor: *bg})
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "send failed: %v\n", err)

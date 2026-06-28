@@ -70,12 +70,21 @@ func TestRenderHD2020TextBitmap(t *testing.T) {
 }
 
 func TestEncodeHD2020FullColorRGBBitmap(t *testing.T) {
-	mask, err := renderHD2020TextMask("GECIS 41RL207", 128, 64)
+	mask, err := renderHD2020TextMask("GECIS 41RL207", 128, 64, TextConfig{HAlign: HAlignCenter, VAlign: VAlignMiddle})
 	if err != nil {
 		t.Fatalf("renderHD2020TextMask() error = %v", err)
 	}
+	var maskLit int
+	for _, on := range mask {
+		if on {
+			maskLit++
+		}
+	}
+	if maskLit < 700 {
+		t.Fatalf("scaled text is too small: lit pixels = %d", maskLit)
+	}
 
-	bitmap, planes, err := encodeHD2020TextBitmap(mask, 128, 64, ColorWhite, hd2020BitmapFullColorRGB)
+	bitmap, planes, err := encodeHD2020TextBitmap(mask, 128, 64, ColorWhite, "#22c55e", hd2020BitmapFullColorRGB)
 	if err != nil {
 		t.Fatalf("encodeHD2020TextBitmap() error = %v", err)
 	}
@@ -94,6 +103,32 @@ func TestEncodeHD2020FullColorRGBBitmap(t *testing.T) {
 	}
 	if lit == 0 {
 		t.Fatal("bitmap is blank")
+	}
+	rowBytes := 128 / 8
+	if bitmap[rowBytes] != 0xff {
+		t.Fatalf("green background plane was not filled")
+	}
+	blackBitmap, _, err := encodeHD2020TextBitmap(mask, 128, 64, "#000000", "#22c55e", hd2020BitmapFullColorRGB)
+	if err != nil {
+		t.Fatalf("encode black-on-green bitmap: %v", err)
+	}
+	var greenBytes, clearedGreenBytes int
+	for py := 0; py < 64; py++ {
+		rowBase := py * rowBytes * 3
+		for _, b := range blackBitmap[rowBase+rowBytes : rowBase+rowBytes*2] {
+			if b != 0 {
+				greenBytes++
+			}
+			if b != 0xff {
+				clearedGreenBytes++
+			}
+		}
+	}
+	if greenBytes == 0 {
+		t.Fatalf("green background unexpectedly blank")
+	}
+	if clearedGreenBytes == 0 {
+		t.Fatalf("black text did not clear any green background pixels")
 	}
 
 	packets := buildHD2020RealtimeAreaPackets(bitmap, 128, 64, planes, 0x9876)
